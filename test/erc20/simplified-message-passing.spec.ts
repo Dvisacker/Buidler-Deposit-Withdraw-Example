@@ -17,7 +17,9 @@ describe('EOA L1 <-> L2 Message Passing', () => {
   let BobL1Wallet: Signer
   let MalloryL1Wallet: Signer
   before(async () => {
-    ;[signer] = await ethers.getSigners()
+    // TODO: Update this to attach to different ethers providers within buidler
+    // as to properly simulate cross domain calls.
+    ;[AliceL1Wallet, BobL1Wallet, MalloryL1Wallet] = await ethers.getSigners()
   })
 
   let signer: Signer
@@ -41,8 +43,12 @@ describe('EOA L1 <-> L2 Message Passing', () => {
 
 
   let ERC20Factory: ContractFactory
+  let L2ERC20Factory: ContractFactory
+  let L1ERC20DepositFactory: ContractFactory
   before(async () => {
-    ERC20Factory = await ethers.getContractFactory('L2ReadyERC20')
+    ERC20Factory = await ethers.getContractFactory('ERC20')
+    L2ERC20Factory = await ethers.getContractFactory('L2ERC20')
+    L1ERC20DepositFactory = await ethers.getContractFactory('L1ERC20Deposit')
   })
 
   let L1ERC20: Contract
@@ -50,29 +56,14 @@ describe('EOA L1 <-> L2 Message Passing', () => {
   let L1ERC20Deposit: Contract
   
   beforeEach(async () => {
-    const messengers = await initCrossDomainMessengers(
-      l1ToL2MessageDelay,
-      l2ToL1MessageDelay,
-      ethers,
-      signer
-    )
-
-    L1_CrossDomainMessenger = messengers.l1CrossDomainMessenger
-    L2_CrossDomainMessenger = messengers.l2CrossDomainMessenger
-  })
-
-  let L1_ERC20: Contract
-  let L2_ERC20: Contract
-  beforeEach(async () => {
-    L1_ERC20 = await ERC20Factory.deploy(
+    L1ERC20 = await ERC20Factory.deploy(
       10000,
       'TEST TOKEN',
       0,
-      'TEST'
+      'TEST',
     )
-
-    L2_ERC20 = await ERC20Factory.deploy(
-      10000,
+    L2ERC20 = await L2ERC20Factory.deploy(
+      0,
       'TEST TOKEN',
       0,
       'TEST',
@@ -85,10 +76,6 @@ describe('EOA L1 <-> L2 Message Passing', () => {
 
     L2ERC20.init(L2_CrossDomainMessenger.address, L1ERC20Deposit.address);
 
-    await L2_ERC20.init(
-      L2_CrossDomainMessenger.address,
-      L1_ERC20.address
-    )
   })
 
 
@@ -100,18 +87,19 @@ describe('EOA L1 <-> L2 Message Passing', () => {
       await L1ERC20Deposit.deposit(AliceL1Wallet.getAddress(), 5000)
       await relayL1ToL2Messages(signer)
 
-      // Wait for the delay to pass, otherwise the message won't exist.
-      await increaseEthTime(l1ToL2MessageDelay + 1)
-      
-      // Use the simplified API, assume that messages are being relayed by a service.
-      await waitForCrossDomainMessages(signer)
+      let l2balance = await L2ERC20.balanceOf(await AliceL1Wallet.getAddress())
+      let l1balance = await L1ERC20.balanceOf(await AliceL1Wallet.getAddress())
+      assert(l2balance == 5000, `l2 balance ${l2balance} != 5000` )
+      assert(l1balance == 5000, `l1 balance ${l1balance} != 5000` )
 
       await L2ERC20.connect(AliceL1Wallet).withdraw(2000)    
       //await increaseEthTime(l1ToL2MessageDelay + 1)
       await relayL2ToL1Messages(signer)
 
-      expect(finalL1Balance).to.equal(0)
-      expect(finalL2Balance).to.equal(originalL1Balance.add(originalL2Balance))
+      l2balance = await L2ERC20.balanceOf(await AliceL1Wallet.getAddress())
+      l1balance = await L1ERC20.balanceOf(await AliceL1Wallet.getAddress())
+      expect(l1balance).to.be.equal(7000)
+      expect(l2balance).to.be.equal(3000)
     })
 
     it('should allow an EOA to deposit and withdraw between two wallets', async () => {
@@ -120,17 +108,27 @@ describe('EOA L1 <-> L2 Message Passing', () => {
       await relayL1ToL2Messages(signer)
       L2ERC20.transfer(BobL1Wallet.getAddress(), 2000)
 
-      // Wait for the delay to pass, otherwise the message won't exist.
-      await increaseEthTime(l2ToL1MessageDelay + 1)
+      let alice_l2balance = await L2ERC20.balanceOf(await AliceL1Wallet.getAddress())
+      let alice_l1balance = await L1ERC20.balanceOf(await AliceL1Wallet.getAddress())
+      let bob_l2balance = await L2ERC20.balanceOf(await BobL1Wallet.getAddress())
+      let bob_l1balance = await L1ERC20.balanceOf(await BobL1Wallet.getAddress())
+      assert(alice_l2balance == 3000, `alice l2 balance ${alice_l2balance} != 3000` )
+      assert(alice_l1balance == 5000, `alice l1 balance ${alice_l1balance} != 5000` )
+      assert(bob_l2balance == 2000, `bob l2 balance ${bob_l2balance} != 2000` )
+      assert(bob_l1balance == 0, `bob l1 balance ${bob_l1balance} != 0` )
 
       await L2ERC20.connect(BobL1Wallet).withdraw(1000)
       await relayL2ToL1Messages(signer)
 
-      const finalL1Balance = await L1_ERC20.balanceOf(await signer.getAddress())
-      const finalL2Balance = await L2_ERC20.balanceOf(await signer.getAddress())
+      alice_l2balance = await L2ERC20.balanceOf(await AliceL1Wallet.getAddress())
+      alice_l1balance = await L1ERC20.balanceOf(await AliceL1Wallet.getAddress())
+      bob_l2balance = await L2ERC20.balanceOf(await BobL1Wallet.getAddress())
+      bob_l1balance = await L1ERC20.balanceOf(await BobL1Wallet.getAddress())
 
-      expect(finalL2Balance).to.equal(0)
-      expect(finalL1Balance).to.equal(originalL1Balance.add(originalL2Balance))
+      expect(alice_l2balance).to.be.eq(3000)
+      expect(alice_l1balance).to.be.eq(5000)
+      expect(bob_l2balance).to.be.eq(1000)
+      expect(bob_l1balance).to.be.eq(1000)
     })
 
     it('should not allow Alice to withdraw transferred $', async () => {
@@ -140,8 +138,8 @@ describe('EOA L1 <-> L2 Message Passing', () => {
 
       L2ERC20.transfer(BobL1Wallet.getAddress(), 5000)
 
-      // Initiate the transfer.
-      await L1_ERC20.xDomainTransfer(originalL1Balance)
+      await expect(L2ERC20.connect(AliceL1Wallet).withdraw(2000)).to.be.revertedWith("account doesn't have enough coins to burn")
+    })
 
     it('should not allow Bob to withdraw twice', async () => {
       await L1ERC20.approve(L1ERC20Deposit.address, 5000)
@@ -153,22 +151,19 @@ describe('EOA L1 <-> L2 Message Passing', () => {
       await L2ERC20.connect(BobL1Wallet).withdraw(3000)
       await relayL2ToL1Messages(signer)
       
-      // We burn immediately, so the L1 balance will already be zero even though the L2 balance
-      // hasn't been updated yet.
-      expect(intermediateL1Balance).to.equal(0)
-      expect(intermediateL2Balance).to.equal(originalL2Balance)
+      await expect(L2ERC20.connect(BobL1Wallet).withdraw(3000)).to.be.revertedWith("account doesn't have enough coins to burn")
 
-      // Now we actually wait for the delay and try again.
-      await increaseEthTime(l2ToL1MessageDelay + 1)
-      await waitForCrossDomainMessages(signer)
+    })
 
     it('should not allow mallory to call withdraw', async () => {
       await L1ERC20.approve(L1ERC20Deposit.address, 5000)
       await L1ERC20Deposit.deposit(AliceL1Wallet.getAddress(), 5000)
       await relayL1ToL2Messages(signer)  
 
-      expect(finalL1Balance).to.equal(0)
-      expect(finalL2Balance).to.equal(originalL1Balance.add(originalL2Balance))
+      await expect(L2ERC20.connect(MalloryL1Wallet).withdraw(3000)).to.be.revertedWith("account doesn't have enough coins to burn")
     })
+
+
+
   })
 })
